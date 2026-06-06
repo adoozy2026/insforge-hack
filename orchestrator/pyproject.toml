@@ -1,0 +1,32 @@
+[project]
+name = "shopper-orchestrator"
+version = "0.1.0"
+description = "Local FastAPI orchestrator for the personal shopper agent"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.32",
+  "anthropic>=0.42",
+  "pydantic>=2.9",
+  "pydantic-settings>=2.6",
+  "httpx>=0.27",
+  "python-dotenv>=1.0",
+  "playwright>=1.49",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8",
+  "pytest-asyncio>=0.24",
+  "ruff>=0.7",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

@@ -32,6 +32,7 @@ from app.agents.scam import score_scam
 from app.config import settings
 from app.db.client import InsforgeClient
 from app.genai_client import get_client
+from app.tools.page_meta import fetch_page_meta
 from app.tools.sources import GOOGLE_SEARCH_TOOL, URL_CONTEXT_TOOL
 
 log = logging.getLogger(__name__)
@@ -110,7 +111,22 @@ async def run_researcher(
 
     try:
         await step("fetching listing", "running")
-        listing = await _extract_listing(candidate["source_url"])
+        # Pull OpenGraph meta in parallel with the LLM extract. The meta
+        # scrape is free and works even when Gemini is rate-limited; it's the
+        # truth source for image_url because the model often returns null
+        # there even when the page has a perfectly good og:image.
+        listing, meta = await asyncio.gather(
+            _extract_listing(candidate["source_url"]),
+            fetch_page_meta(candidate["source_url"]),
+            return_exceptions=False,
+        )
+        # Merge: LLM wins for fields it actually populated; meta fills gaps.
+        if not listing.image_url and meta.image_url:
+            listing.image_url = meta.image_url
+        if not listing.title and meta.title:
+            listing.title = meta.title
+        if not listing.description_summary and meta.description:
+            listing.description_summary = meta.description[:300]
         listing_payload = listing.model_dump(exclude_none=False)
         await step("extracted listing", "running", listing_payload)
 

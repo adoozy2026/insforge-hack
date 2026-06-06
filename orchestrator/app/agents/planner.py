@@ -12,6 +12,7 @@ extraction pass per candidate.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -19,6 +20,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
 
+import httpx
 from google.genai import types
 
 from app.config import settings
@@ -28,6 +30,16 @@ from app.tools.sources import GOOGLE_SEARCH_TOOL
 log = logging.getLogger(__name__)
 
 MAX_CANDIDATES = 8
+
+# Gemini wraps every grounded URL in a one-time-use redirect under this host.
+# We resolve them to the real retailer URL before persisting so the dashboard
+# (and the Researcher band) see a stable, click-through-friendly link.
+_GROUNDING_REDIRECT_HOST = "vertexaisearch.cloud.google.com"
+
+_BROWSER_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+)
 
 # Domains that obviously aren't product listings — drop on sight.
 _NON_PRODUCT_DOMAINS = {
@@ -41,6 +53,8 @@ _NON_PRODUCT_DOMAINS = {
     "tiktok.com",
     "wikipedia.org",
     "quora.com",
+    # Unresolved Gemini grounding redirects fall through here when HEAD fails.
+    "vertexaisearch.cloud.google.com",
 }
 
 SYSTEM_PROMPT = """You are a search planner for a personal shopping service.
@@ -138,9 +152,13 @@ async def run_planner(intent_id: str, spec: dict[str, Any]) -> list[CandidateDra
     raw = _extract_grounding_urls(resp)
     log.info("planner: %d grounding URLs returned", len(raw))
 
+    # Resolve grounding redirects in parallel so candidate.source_url is the
+    # real retailer URL (not a one-time-use vertexai redirect).
+    resolved = await _resolve_grounding_redirects(raw)
+
     seen: set[str] = set()
     drafts: list[CandidateDraft] = []
-    for url, title in raw:
+    for url, title in resolved:
         if url in seen:
             continue
         seen.add(url)
@@ -158,3 +176,41 @@ async def run_planner(intent_id: str, spec: dict[str, Any]) -> list[CandidateDra
 
     log.info("planner: %d candidates after filtering", len(drafts))
     return drafts
+
+
+async def _resolve_grounding_redirects(
+    pairs: list[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    """Follow any Gemini grounding redirects to their real destination.
+
+    URLs that aren't grounding redirects pass through unchanged. Resolution
+    failures fall back to the original URL.
+    """
+    needs_resolve = [
+        (i, u)
+        for i, (u, _) in enumerate(pairs)
+        if _GROUNDING_REDIRECT_HOST in (urlparse(u).hostname or "")
+    ]
+    if not needs_resolve:
+        return pairs
+
+    async with httpx.AsyncClient(
+        follow_redirects=True,
+        timeout=8.0,
+        headers={"User-Agent": _BROWSER_UA},
+    ) as client:
+
+        async def resolve(idx: int, url: str) -> tuple[int, str]:
+            try:
+                r = await client.head(url)
+                return idx, str(r.url)
+            except Exception as e:
+                log.debug("redirect resolve failed for %s: %s", url, e)
+                return idx, url
+
+        results = await asyncio.gather(*(resolve(i, u) for i, u in needs_resolve))
+
+    out = list(pairs)
+    for idx, real_url in results:
+        out[idx] = (real_url, out[idx][1])
+    return out

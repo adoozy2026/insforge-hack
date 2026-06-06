@@ -4,17 +4,63 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { insforge, isConfigured } from "@/lib/insforge";
 
-// Example preference terms users can click to append to their prompt. Each chip
-// disappears once used so the suggestion list shrinks as the prompt is built up.
-const EXAMPLE_TERMS = [
-  "like-new condition",
-  "prefer a trusted retailer",
-  "ships within 3 days",
-  "free 30-day returns",
-  "under $700",
-  "includes a warranty",
-  "unlocked / carrier-free",
-  "in stock now",
+// Example preference terms users can click to append to their prompt, grouped by
+// category. Each chip disappears once used so the suggestion list shrinks as the
+// prompt is built up.
+const EXAMPLE_GROUPS: { label: string; terms: string[] }[] = [
+  {
+    label: "Condition",
+    terms: [
+      "brand new / sealed",
+      "like-new condition",
+      "open-box",
+      "certified refurbished",
+      "gently used",
+    ],
+  },
+  {
+    label: "Price & deals",
+    terms: [
+      "within my budget",
+      "on sale / best price",
+      "price-match guarantee",
+      "financing available",
+    ],
+  },
+  {
+    label: "Seller",
+    terms: [
+      "prefer a trusted retailer",
+      "highly rated seller (4.5★+)",
+      "sold/shipped by the brand",
+    ],
+  },
+  {
+    label: "Shipping & pickup",
+    terms: [
+      "free shipping",
+      "ships within 3 days",
+      "local pickup available",
+    ],
+  },
+  {
+    label: "Returns & warranty",
+    terms: [
+      "free 30-day returns",
+      "includes a warranty",
+    ],
+  },
+  {
+    label: "Specifics",
+    terms: [
+      "latest model",
+      "in stock now",
+      "unlocked / carrier-free",
+      "original packaging & accessories",
+      "energy efficient",
+      "eco-friendly / sustainable",
+    ],
+  },
 ];
 
 export default function Home() {
@@ -86,7 +132,9 @@ export default function Home() {
     }
   }
 
-  const remainingTerms = EXAMPLE_TERMS.filter((t) => !usedTerms.includes(t));
+  const hasRemainingTerms = EXAMPLE_GROUPS.some((g) =>
+    g.terms.some((t) => !usedTerms.includes(t)),
+  );
 
   return (
     <main className="mx-auto max-w-2xl px-6 py-24">
@@ -107,23 +155,34 @@ export default function Home() {
           className="w-full rounded-lg border border-neutral-300 bg-white px-4 py-3 text-sm text-neutral-900 placeholder:text-neutral-400 shadow-sm outline-none focus:border-neutral-900"
         />
 
-        {remainingTerms.length > 0 && (
-          <div>
+        {hasRemainingTerms && (
+          <div className="space-y-3">
             <p className="text-xs font-medium text-neutral-500">
               Add a preference (click to append):
             </p>
-            <div className="mt-2 flex flex-wrap gap-2">
-              {remainingTerms.map((term) => (
-                <button
-                  key={term}
-                  type="button"
-                  onClick={() => appendTerm(term)}
-                  className="rounded-full border border-neutral-300 bg-white px-3 py-1 text-xs text-neutral-700 shadow-sm transition hover:border-neutral-900 hover:bg-neutral-900 hover:text-white"
-                >
-                  + {term}
-                </button>
-              ))}
-            </div>
+            {EXAMPLE_GROUPS.map((group) => {
+              const terms = group.terms.filter((t) => !usedTerms.includes(t));
+              if (terms.length === 0) return null;
+              return (
+                <div key={group.label}>
+                  <p className="text-[11px] font-medium uppercase tracking-wide text-neutral-400">
+                    {group.label}
+                  </p>
+                  <div className="mt-1.5 flex flex-wrap gap-2">
+                    {terms.map((term) => (
+                      <button
+                        key={term}
+                        type="button"
+                        onClick={() => appendTerm(term)}
+                        className="rounded-full border border-neutral-300 bg-white px-3 py-1 text-xs text-neutral-700 shadow-sm transition hover:border-neutral-900 hover:bg-neutral-900 hover:text-white"
+                      >
+                        + {term}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
 

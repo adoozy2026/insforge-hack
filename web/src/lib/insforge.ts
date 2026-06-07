@@ -83,6 +83,9 @@ export type FindingPayload = {
   scam_score?: number;
   scam_reasons?: string[];
   confidence?: string;
+  // When the browser-agent configurator ran on this candidate.
+  configurator_steps?: number;
+  configurator_history?: { action: string; reason: string }[];
 };
 
 export type Alternative = { title: string; why_consider: string };

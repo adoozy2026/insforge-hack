@@ -28,12 +28,23 @@ from typing import Any
 from google.genai import types
 from pydantic import BaseModel
 
+from app.agents.configurator import (
+    configure_and_extract,
+    extract_from_text,
+    should_escalate,
+)
 from app.agents.scam import score_scam
 from app.config import settings
 from app.db.client import InsforgeClient
 from app.genai_client import get_client
 from app.tools.page_meta import fetch_page_meta
 from app.tools.sources import GOOGLE_SEARCH_TOOL, URL_CONTEXT_TOOL
+
+# Cap the number of candidates per intent that get the browser-agent
+# escalation. Each escalation is +15-45s of latency and several extra
+# Gemini multimodal calls — without a cap, a single query can balloon
+# past 3 min.
+MAX_ESCALATIONS_PER_INTENT = 2
 
 log = logging.getLogger(__name__)
 
@@ -88,7 +99,17 @@ async def run_researcher(
     client: InsforgeClient,
     candidate: dict[str, Any],
     spec: dict[str, Any],
+    *,
+    escalation_budget: list[int] | None = None,
 ) -> None:
+    """Research one candidate end-to-end, optionally escalating to the
+    browser-agent configurator if the static extract is thin or the URL
+    is on a known-configurable retailer.
+
+    ``escalation_budget`` is a single-element mutable list (so siblings
+    share state via asyncio.gather). Each researcher that escalates
+    decrements it. None disables escalation entirely.
+    """
     candidate_id = candidate["id"]
     intent_id = candidate["intent_id"]
     label = candidate.get("source") or "researcher"
@@ -149,6 +170,37 @@ async def run_researcher(
             listing.description_summary = meta.description[:300]
         listing_payload = listing.model_dump(exclude_none=False)
         await step("extracted listing", "running", listing_payload)
+
+        # ---- Optional browser-agent escalation ----
+        # Configurable retailers (apple.com, bestbuy.com, ...) often hide
+        # the real price behind a variant picker. If the URL matches one,
+        # or static extraction couldn't find a price at all, open a
+        # Playwright session and have Gemini drive the page.
+        if (
+            escalation_budget is not None
+            and escalation_budget[0] > 0
+            and should_escalate(candidate["source_url"], listing.price_cents)
+        ):
+            escalation_budget[0] -= 1
+            cfg = await configure_and_extract(
+                candidate["source_url"],
+                spec,
+                update_step=lambda msg: step(msg, "running"),
+            )
+            if cfg.steps > 0:
+                finding["configurator_steps"] = cfg.steps
+                finding["configurator_history"] = [
+                    {"action": h.action, "reason": h.reason} for h in cfg.history
+                ]
+                # Merge configured facts on top of the static extract — only
+                # for fields the configurator actually populated.
+                fresh = await extract_from_text(cfg.text)
+                if fresh:
+                    for k, v in fresh.items():
+                        finding[k] = v
+                        if hasattr(listing, k):
+                            setattr(listing, k, v)
+                    await step("merged configured listing", "running", finding)
 
         if listing.price_cents:
             await client.update(
@@ -443,11 +495,13 @@ async def run_all_researchers(
     log.info("dispatching %d researchers", len(candidates))
 
     sem = asyncio.Semaphore(3)
+    # Shared budget so siblings can collectively cap escalations per intent.
+    budget = [MAX_ESCALATIONS_PER_INTENT]
 
     async def runner(idx: int, c: dict[str, Any]) -> None:
         await asyncio.sleep(0.5 * idx)
         async with sem:
-            await run_researcher(client, c, spec)
+            await run_researcher(client, c, spec, escalation_budget=budget)
 
     await asyncio.gather(
         *(runner(i, c) for i, c in enumerate(candidates)),

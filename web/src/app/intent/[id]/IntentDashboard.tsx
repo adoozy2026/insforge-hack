@@ -228,20 +228,34 @@ function CandidateTile({
       }`}
     >
       <div className="flex items-start justify-between gap-2">
-        <div className="text-xs text-neutral-500">{candidate.source}</div>
-        {isTopPick && (
-          <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-emerald-800">
-            top pick
-          </span>
-        )}
-        {!isTopPick && scam != null && scam >= 40 && (
-          <span
-            className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-800"
-            title={scamReasons.join("; ")}
-          >
-            risk {scam}
-          </span>
-        )}
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-neutral-500">
+          <span>{candidate.source}</span>
+          {f?.configurator_steps != null && f.configurator_steps > 0 && (
+            <span
+              className="rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-indigo-800"
+              title={(f.configurator_history ?? [])
+                .map((h, i) => `${i + 1}. ${h.action} — ${h.reason}`)
+                .join("\n")}
+            >
+              🤖 navigated {f.configurator_steps} step{f.configurator_steps === 1 ? "" : "s"}
+            </span>
+          )}
+        </div>
+        <div className="flex shrink-0 flex-wrap items-end justify-end gap-1">
+          {isTopPick && (
+            <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-emerald-800">
+              top pick
+            </span>
+          )}
+          {!isTopPick && scam != null && scam >= 40 && (
+            <span
+              className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-800"
+              title={scamReasons.join("; ")}
+            >
+              risk {scam}
+            </span>
+          )}
+        </div>
       </div>
 
       {f?.image_url ? (

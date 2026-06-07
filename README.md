@@ -6,7 +6,7 @@
 
 ## Overview
 
-Personal Shopper Agent is a multi-agent retail research system built during a 24-hour hackathon. A user describes what they want to buy in plain language; an autonomous pipeline of specialized LLM agents discovers candidate listings across retailers, deep-dives each one in parallel, detects scams, and synthesizes a holistic shopping recommendation — complete with tradeoff analysis, honest warnings, and price-trend forecasts.
+Personal Shopper Agent is a multi-agent retail research system built during a hackathon. A user describes what they want to buy in plain language; an autonomous pipeline of specialized LLM agents discovers candidate listings across retailers, deep-dives each one in parallel, detects scams, and synthesizes a holistic shopping recommendation — complete with tradeoff analysis, honest warnings, and price-trend forecasts.
 
 The system is split into two cooperating services:
 

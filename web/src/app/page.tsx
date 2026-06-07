@@ -284,7 +284,7 @@ export default function Home() {
   return (
     <main className="mx-auto max-w-2xl px-6 py-24">
       <h1 className="text-3xl font-semibold tracking-tight">
-        Hi, I&apos;m your personalized Shoppr Jeff{" "}
+        Hi, I&apos;m your personal Shoppr Jeff{" "}
         <span className="inline-block animate-[wave_1.8s_ease-in-out_infinite] origin-[70%_70%]">👋</span>
       </h1>
       <p className="mt-2 text-sm text-neutral-500">

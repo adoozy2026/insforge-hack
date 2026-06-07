@@ -23,5 +23,14 @@ class Settings(BaseSettings):
     orchestrator_log_level: str = "info"
     poll_interval_seconds: float = 1.5
 
+    # --- Extractor pool / Replicas integration ---
+    # Off by default — the user-facing pipeline keeps working without it.
+    # Flip to true once the Replicas GitHub app is installed on the target
+    # repo so subprocess `replicas create` won't dead-end.
+    replicas_enabled: bool = False
+    replicas_cli_path: str = "/Users/andrewwang/.bun/bin/replicas"
+    replicas_min_runs: int = 3
+    replicas_target_repo: str = "adoozy2026/insforge-hack"
+
 
 settings = Settings()

@@ -24,6 +24,7 @@ import asyncio
 import json
 import logging
 from typing import Any
+from urllib.parse import urlparse
 
 from google.genai import types
 from pydantic import BaseModel
@@ -77,6 +78,15 @@ class ListingFacts(BaseModel):
     # Closed-shape submodel: Gemini Developer API rejects open `dict[str, Any]`
     # because it generates `additionalProperties: true` in the schema.
     canonical_attrs: CanonicalAttrs = CanonicalAttrs()
+
+
+def _host(url: str) -> str:
+    """Normalize a candidate URL to its registrable host for extractor_runs."""
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:
+        return ""
+    return host[4:] if host.startswith("www.") else host
 
 
 def _looks_like_url(s: str) -> bool:
@@ -201,6 +211,28 @@ async def run_researcher(
                         if hasattr(listing, k):
                             setattr(listing, k, v)
                     await step("merged configured listing", "running", finding)
+
+            # ---- Log this run for the extractor pool ----
+            # We log REGARDLESS of whether Replicas is enabled — the data is
+            # cheap and unlocks the pool the moment we flip the flag.
+            try:
+                facts_now = listing.model_dump(exclude_none=True)
+                await client.insert(
+                    "extractor_runs",
+                    {
+                        "domain": _host(candidate["source_url"]),
+                        "candidate_id": candidate_id,
+                        "intent_id": intent_id,
+                        "source_url": candidate["source_url"],
+                        "spec": spec,
+                        "action_history": finding.get("configurator_history") or [],
+                        "extracted_facts": facts_now,
+                        "succeeded": bool(listing.price_cents),
+                    },
+                )
+            except Exception as e:
+                # Logging failure must NOT break the user-facing pipeline.
+                log.warning("extractor_runs insert failed: %s", e)
 
         if listing.price_cents:
             await client.update(

@@ -1,0 +1,15 @@
+{
+  "notes": "User requested brand new / sealed condition and the latest model.",
+  "condition": "new",
+  "raw_query": "Gaming monitor OLED, brand new / sealed 4K, latest model, within my budget of up to $1000",
+  "must_haves": [
+    "OLED",
+    "4K",
+    "latest model"
+  ],
+  "budget_cents": 100000,
+  "deal_breakers": [],
+  "product_class": "4K OLED gaming monitor",
+  "shipping_speed": "any",
+  "retailer_preferences": []
+}

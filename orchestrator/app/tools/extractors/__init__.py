@@ -1,2 +1,4 @@
-# Reserved for the v2 extractor pool — see plan §"Extractor strategy".
-# v1 ships with inline LLM extraction only; this package stays empty.
+# Deterministic per-domain extractors. Modules in this package follow the
+# ``async def extract(page: Page, spec: dict) -> dict`` contract; the
+# matching ``<domain>.md`` files hold prompt hints injected into the
+# browser-agent fallback's system prompt.

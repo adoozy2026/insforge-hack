@@ -1,0 +1,14 @@
+# Build hygiene — keep the image small and avoid leaking local secrets.
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.env
+.env.*
+.git
+.gitignore
+README.md.orig
+Dockerfile
+.dockerignore

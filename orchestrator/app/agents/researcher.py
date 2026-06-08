@@ -52,17 +52,6 @@ log = logging.getLogger(__name__)
 # ---- Structured-output schemas ------------------------------------------
 
 
-class CanonicalAttrs(BaseModel):
-    brand: str | None = None
-    model: str | None = None
-    generation: str | None = None
-    storage_gb: int | None = None
-    color: str | None = None
-    carrier_lock: str | None = None
-    condition_grade: str | None = None
-    region: str | None = None
-
-
 class ListingFacts(BaseModel):
     title: str | None = None
     price_cents: int | None = None
@@ -74,9 +63,6 @@ class ListingFacts(BaseModel):
     return_policy: str | None = None
     image_url: str | None = None
     description_summary: str | None = None
-    # Closed-shape submodel: Gemini Developer API rejects open `dict[str, Any]`
-    # because it generates `additionalProperties: true` in the schema.
-    canonical_attrs: CanonicalAttrs = CanonicalAttrs()
 
 
 def _looks_like_url(s: str) -> bool:
@@ -149,8 +135,8 @@ async def run_researcher(
         # scrape is free and works even when Gemini is rate-limited; it's the
         # truth source for image_url because the model often returns null
         # there even when the page has a perfectly good og:image.
-        listing, meta = await asyncio.gather(
-            _extract_listing(candidate["source_url"]),
+        (listing, spec_attrs), meta = await asyncio.gather(
+            _extract_listing(candidate["source_url"], spec),
             fetch_page_meta(candidate["source_url"]),
             return_exceptions=False,
         )
@@ -169,6 +155,7 @@ async def run_researcher(
         if not listing.description_summary and meta.description:
             listing.description_summary = meta.description[:300]
         listing_payload = listing.model_dump(exclude_none=False)
+        listing_payload["spec_attrs"] = spec_attrs
         await step("extracted listing", "running", listing_payload)
 
         # ---- Optional browser-agent escalation ----
@@ -267,8 +254,8 @@ Your reply MUST be one raw JSON object — no prose, no Markdown, no code
 fences, no array wrapper. Be conservative: leave fields null if the page
 doesn't clearly state them. Do NOT invent prices, conditions, or sellers.
 price_cents and shipping_cost_cents must be integers in US cents. If the
-page shows a price range, use the lowest. For canonical_attrs, fill the
-variant fields you can identify — leave a field null when unknown rather
+page shows a price range, use the lowest. For spec_attrs, fill the
+attribute fields you can identify — leave a field null when unknown rather
 than guessing."""
 
 
@@ -276,7 +263,11 @@ than guessing."""
 # when any tool is enabled in the same call. So for steps that need both a
 # tool (url_context / google_search) AND structured output, we ask the model
 # to emit JSON inside its text response and parse it ourselves.
-_EXTRACT_JSON_INSTRUCTION = """Reply with ONLY a JSON object — no prose,
+#
+# The instruction is now built dynamically per-request so the ``spec_attrs``
+# section reflects categories from the intake agent's spec.
+
+_EXTRACT_JSON_CORE = """Reply with ONLY a JSON object — no prose,
 no code fences — matching exactly this shape:
 
 {
@@ -289,16 +280,9 @@ no code fences — matching exactly this shape:
   "ships_from": string|null,
   "return_policy": string|null,
   "image_url": string|null,
-  "description_summary": string|null,
-  "canonical_attrs": {
-    "brand": string|null, "model": string|null, "generation": string|null,
-    "storage_gb": integer|null, "color": string|null,
-    "carrier_lock": string|null, "condition_grade": string|null,
-    "region": string|null
-  }
-}
+  "description_summary": string|null"""
 
-Use null for fields the page does not state. price_cents and
+_EXTRACT_JSON_FOOTER = """Use null for fields the page does not state. price_cents and
 shipping_cost_cents are integers in US cents.
 
 image_url: the primary product image — prefer the OpenGraph `og:image`
@@ -307,6 +291,51 @@ meta tag if present, otherwise the largest visible product photo URL.
 description_summary: 1-2 neutral sentences (≤200 chars) describing what's
 actually being sold — variant, what's included, notable seller-supplied
 detail. Do NOT include marketing language."""
+
+
+def _build_extract_instruction(spec: dict[str, Any]) -> str:
+    """Build the JSON extraction instruction dynamically from the intake spec.
+
+    Core listing fields (price, seller, shipping, etc.) are always requested.
+    Additional ``spec_attrs`` fields are derived from the spec's categories so
+    the extraction adapts to whatever the user is shopping for.
+    """
+    categories = spec.get("categories") or {}
+
+    attr_schema_lines: list[str] = []
+    attr_guide_lines: list[str] = []
+    for cat_name, entry in categories.items():
+        if not isinstance(entry, dict):
+            continue
+        key = cat_name.lower().replace(" ", "_").replace("-", "_")
+        value_hint = entry.get("value", "")
+        attr_schema_lines.append(f'    "{key}": string|null')
+        attr_guide_lines.append(
+            f"  - {key}: extract the listing's {cat_name}"
+            + (f" (user wants: {value_hint})" if value_hint else "")
+        )
+
+    if attr_schema_lines:
+        spec_block = (
+            ',\n  "spec_attrs": {\n'
+            + ",\n".join(attr_schema_lines)
+            + "\n  }\n}"
+        )
+        guide = (
+            "\nspec_attrs field guide — extract each attribute as stated on "
+            "the listing page:\n" + "\n".join(attr_guide_lines)
+        )
+    else:
+        spec_block = ',\n  "spec_attrs": {}\n}'
+        guide = ""
+
+    return (
+        _EXTRACT_JSON_CORE
+        + spec_block
+        + "\n\n"
+        + _EXTRACT_JSON_FOOTER
+        + guide
+    )
 
 
 def _strip_code_fence(text: str) -> str:
@@ -322,13 +351,20 @@ def _strip_code_fence(text: str) -> str:
     return t.removesuffix("```").strip()
 
 
-async def _extract_listing(url: str) -> ListingFacts:
-    """One Gemini call: url_context tool, JSON-as-text output."""
+async def _extract_listing(
+    url: str, spec: dict[str, Any]
+) -> tuple[ListingFacts, dict[str, Any]]:
+    """One Gemini call: url_context tool, JSON-as-text output.
+
+    Returns ``(listing, spec_attrs)`` where ``spec_attrs`` contains the
+    dynamic attributes derived from the intake spec's categories.
+    """
     client = get_client()
+    instruction = _build_extract_instruction(spec)
     prompt = (
         "Read the product listing at this URL and extract the structured facts."
         f"\nURL: {url}\n\n"
-        + _EXTRACT_JSON_INSTRUCTION
+        + instruction
     )
     try:
         resp = await client.aio.models.generate_content(
@@ -342,18 +378,19 @@ async def _extract_listing(url: str) -> ListingFacts:
         )
     except Exception as e:
         log.warning("extract: url_context call failed for %s: %s", url, e)
-        return ListingFacts()
+        return ListingFacts(), {}
 
     text = _strip_code_fence(resp.text or "")
     data = _coerce_listing_json(text)
     if data is None:
         log.warning("extract: could not coerce JSON for %s; text=%r", url, text[:200])
-        return ListingFacts()
+        return ListingFacts(), {}
+    spec_attrs = data.pop("spec_attrs", {}) or {}
     try:
-        return ListingFacts(**data)
+        return ListingFacts(**data), spec_attrs
     except Exception as e:
         log.warning("extract: schema validation failed: %s; data keys=%s", e, list(data.keys()))
-        return ListingFacts()
+        return ListingFacts(), spec_attrs
 
 
 def _coerce_listing_json(text: str) -> dict[str, Any] | None:

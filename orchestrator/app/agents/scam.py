@@ -86,11 +86,14 @@ def score_scam(finding: dict[str, Any], spec: dict[str, Any]) -> tuple[int, list
         score += 25
         reasons.append("seller reputation lookup surfaced scam mentions")
 
-    # 5. Variant mismatch — extraction couldn't pin down a canonical variant.
-    canon = finding.get("canonical_attrs") or {}
-    if isinstance(canon, dict) and not canon:
-        score += 10
-        reasons.append("could not extract a clear product variant from listing")
+    # 5. Variant mismatch — extraction couldn't pin down spec-relevant attrs.
+    spec_attrs = finding.get("spec_attrs") or {}
+    categories = spec.get("categories") or {}
+    if categories and isinstance(spec_attrs, dict):
+        filled = sum(1 for v in spec_attrs.values() if v is not None)
+        if filled == 0:
+            score += 10
+            reasons.append("could not extract any spec-relevant attributes from listing")
 
     score = max(0, min(100, score))
     return score, reasons

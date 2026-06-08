@@ -48,7 +48,7 @@ export type CandidateRow = {
   id: string;
   intent_id: string;
   title: string;
-  canonical_attrs: Record<string, unknown>;
+  canonical_attrs: Record<string, unknown>; // legacy, now dynamic via spec_attrs
   source: string;
   source_url: string;
   raw_price_cents: number | null;
@@ -77,7 +77,8 @@ export type FindingPayload = {
   return_policy?: string | null;
   image_url?: string | null;
   description_summary?: string | null;
-  canonical_attrs?: Record<string, unknown>;
+  canonical_attrs?: Record<string, unknown>; // legacy
+  spec_attrs?: Record<string, string | number | null>;
   seller_rep?: string | null;
   known_issues?: string[];
   scam_score?: number;

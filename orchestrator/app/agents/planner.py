@@ -84,17 +84,29 @@ async def _search_amazon(query: str) -> list[tuple[str, str]]:
     links and titles from the DOM. Returns up to ~20 results before the
     caller dedupes / caps.
 
-    Amazon rejects direct cold navigation to ``/s?k=…`` from headless
-    browsers (returns a "Sorry" error page). Visiting the homepage first
-    establishes session cookies that make subsequent search requests
-    succeed.
+    Amazon rejects requests that look automated. To avoid the "Sorry"
+    error page we: (1) create a context with realistic viewport, locale,
+    timezone, and Accept headers, (2) visit the homepage first so Amazon
+    sets session cookies, (3) wait briefly for cookies to settle, then
+    (4) navigate to the search URL.
     """
     encoded = quote_plus(query)
     url = f"https://www.amazon.com/s?k={encoded}"
     log.info("amazon search: %s", url)
 
     browser = await get_browser()
-    ctx = await browser.new_context(user_agent=_BROWSER_UA)
+    ctx = await browser.new_context(
+        user_agent=_BROWSER_UA,
+        viewport={"width": 1920, "height": 1080},
+        locale="en-US",
+        timezone_id="America/New_York",
+        extra_http_headers={
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept": (
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+            ),
+        },
+    )
     page = await ctx.new_page()
     results: list[tuple[str, str]] = []
     try:
@@ -102,6 +114,7 @@ async def _search_amazon(query: str) -> list[tuple[str, str]]:
         await page.goto(
             "https://www.amazon.com", wait_until="domcontentloaded", timeout=20_000
         )
+        await page.wait_for_timeout(2_000)
         await page.goto(url, wait_until="domcontentloaded", timeout=25_000)
         # Wait for the main results grid to appear.
         try:
@@ -115,11 +128,10 @@ async def _search_amazon(query: str) -> list[tuple[str, str]]:
             '[data-component-type="s-search-result"]'
         )
         for card in cards:
-            # Each card has a data-asin attribute and a title link.
             asin = await card.get_attribute("data-asin")
             if not asin:
                 continue
-            title_el = await card.query_selector("h2 a span")
+            title_el = await card.query_selector("h2 span")
             title = (await title_el.inner_text()).strip() if title_el else ""
             if not title:
                 continue

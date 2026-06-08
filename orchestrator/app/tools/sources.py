@@ -81,7 +81,7 @@ _PLAYWRIGHT_LOCK = asyncio.Lock()
 _BROWSER = None  # cached chromium instance
 
 
-async def _get_browser():
+async def get_browser():
     """Lazy-launch a singleton chromium so per-call cost stays low."""
     global _BROWSER
     if _BROWSER is not None:
@@ -111,7 +111,7 @@ async def playwright_fetch(url: str, wait_for_selector: str | None = None) -> st
         return fixture_fetch(url)
 
     try:
-        browser = await _get_browser()
+        browser = await get_browser()
         ctx = await browser.new_context(
             user_agent=(
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "

@@ -29,7 +29,6 @@ _BROWSER_UA = (
 )
 
 
-
 @dataclass
 class CandidateDraft:
     title: str

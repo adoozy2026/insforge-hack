@@ -3,12 +3,12 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
   insforge,
-  imgProxy,
   isConfigured,
   type Alternative,
   type CandidatePick,
   type CandidateRow,
   type ClarifyingTurn,
+  type FindingPayload,
   type FindingRow,
   type IntentRow,
   type IntentStatus,
@@ -201,6 +201,20 @@ export default function IntentDashboard({ intentId }: Props) {
   );
 }
 
+/** Read a field from the finding payload, falling back into spec_attrs. */
+function fAttr(f: FindingPayload | undefined, key: string): string | null {
+  if (!f) return null;
+  const record = f as Record<string, unknown>;
+  const top = record[key];
+  if (typeof top === "string" && top) return top;
+  const sa = f.spec_attrs;
+  if (sa) {
+    const v = sa[key];
+    if (typeof v === "string" && v) return v;
+  }
+  return null;
+}
+
 function CandidateTile({
   candidate,
   finding,
@@ -266,24 +280,7 @@ function CandidateTile({
         </div>
       </div>
 
-      {f?.image_url ? (
-        // Routed through the orchestrator's /img proxy so retailer hotlink
-        // protection (Referer / hostname checks) doesn't break the load.
-        <div className="mt-3 aspect-video w-full overflow-hidden rounded-md bg-neutral-100">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={imgProxy(f.image_url)}
-            alt={candidate.title}
-            className="h-full w-full object-cover"
-            loading="lazy"
-            onError={(e) => {
-              (e.target as HTMLImageElement).style.display = "none";
-            }}
-          />
-        </div>
-      ) : (
-        <div className="mt-3 aspect-video w-full rounded-md bg-neutral-50" />
-      )}
+
 
       <div className="mt-3 line-clamp-2 text-sm font-medium text-neutral-900">
         {f?.title || candidate.title}
@@ -291,8 +288,8 @@ function CandidateTile({
 
       <div className="mt-2 flex items-baseline gap-2">
         <span className="text-lg font-semibold text-neutral-900">{money(price)}</span>
-        {f?.condition && (
-          <span className="text-xs text-neutral-500">{f.condition}</span>
+        {fAttr(f, "condition") && (
+          <span className="text-xs text-neutral-500">{fAttr(f, "condition")}</span>
         )}
       </div>
 
@@ -305,29 +302,29 @@ function CandidateTile({
 
       {f?.description_summary && (
         <ExpandableText
-          text={f.description_summary}
+          text={f.description_summary as string}
           clampLines={3}
           className="mt-2 text-xs text-neutral-600"
         />
       )}
 
       <dl className="mt-3 space-y-1 text-xs text-neutral-700">
-        {f?.seller && (
+        {fAttr(f, "seller") && (
           <div className="flex justify-between gap-2">
             <dt className="shrink-0 text-neutral-500">seller</dt>
-            <dd className="break-words text-right">{f.seller}</dd>
+            <dd className="break-words text-right">{fAttr(f, "seller")}</dd>
           </div>
         )}
-        {f?.shipping_speed && (
+        {fAttr(f, "shipping_speed") && (
           <div className="flex justify-between gap-2">
             <dt className="shrink-0 text-neutral-500">shipping</dt>
-            <dd className="break-words text-right">{f.shipping_speed}</dd>
+            <dd className="break-words text-right">{fAttr(f, "shipping_speed")}</dd>
           </div>
         )}
-        {f?.return_policy && (
+        {fAttr(f, "return_policy") && (
           <div className="flex justify-between gap-2">
             <dt className="shrink-0 text-neutral-500">returns</dt>
-            <dd className="break-words text-right">{f.return_policy}</dd>
+            <dd className="break-words text-right">{fAttr(f, "return_policy")}</dd>
           </div>
         )}
       </dl>
@@ -420,19 +417,7 @@ function TopPickPanel({
   return (
     <section className="mt-6 overflow-hidden rounded-lg border border-emerald-300 bg-emerald-50 p-5 shadow-sm">
       <div className="flex flex-col gap-5 sm:flex-row">
-        {f?.image_url && (
-          <div className="aspect-square w-full max-w-[180px] overflow-hidden rounded-md bg-white">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={imgProxy(f.image_url)}
-              alt={candidate.title}
-              className="h-full w-full object-cover"
-              onError={(e) => {
-                (e.target as HTMLImageElement).style.display = "none";
-              }}
-            />
-          </div>
-        )}
+
         <div className="flex-1">
           <div className="text-xs font-medium uppercase tracking-wider text-emerald-800">
             Top pick · {candidate.source}
@@ -444,11 +429,11 @@ function TopPickPanel({
             <span className="text-2xl font-semibold text-neutral-900">
               {money(price)}
             </span>
-            {f?.condition && (
-              <span className="text-neutral-600">{f.condition}</span>
+            {fAttr(f, "condition") && (
+              <span className="text-neutral-600">{fAttr(f, "condition")}</span>
             )}
-            {f?.seller && (
-              <span className="text-neutral-500">at {f.seller}</span>
+            {fAttr(f, "seller") && (
+              <span className="text-neutral-500">at {fAttr(f, "seller")}</span>
             )}
           </div>
           {rec.rationale && (

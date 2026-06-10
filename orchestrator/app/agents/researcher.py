@@ -24,7 +24,6 @@ import asyncio
 import json
 import logging
 from typing import Any
-from urllib.parse import urlparse
 
 from google.genai import types
 from pydantic import BaseModel
@@ -53,53 +52,10 @@ log = logging.getLogger(__name__)
 # ---- Structured-output schemas ------------------------------------------
 
 
-class CanonicalAttrs(BaseModel):
-    brand: str | None = None
-    model: str | None = None
-    generation: str | None = None
-    storage_gb: int | None = None
-    color: str | None = None
-    carrier_lock: str | None = None
-    condition_grade: str | None = None
-    region: str | None = None
-
-
 class ListingFacts(BaseModel):
     title: str | None = None
     price_cents: int | None = None
-    condition: str | None = None
-    seller: str | None = None
     shipping_cost_cents: int | None = None
-    shipping_speed: str | None = None
-    ships_from: str | None = None
-    return_policy: str | None = None
-    image_url: str | None = None
-    description_summary: str | None = None
-    # Closed-shape submodel: Gemini Developer API rejects open `dict[str, Any]`
-    # because it generates `additionalProperties: true` in the schema.
-    canonical_attrs: CanonicalAttrs = CanonicalAttrs()
-
-
-def _host(url: str) -> str:
-    """Normalize a candidate URL to its registrable host for extractor_runs."""
-    try:
-        host = (urlparse(url).hostname or "").lower()
-    except Exception:
-        return ""
-    return host[4:] if host.startswith("www.") else host
-
-
-def _looks_like_url(s: str) -> bool:
-    """Cheap sanity check: a single well-formed URL with no embedded second
-    scheme. Catches the common LLM failure mode of concatenating two URLs."""
-    if not s or not isinstance(s, str):
-        return False
-    s = s.strip()
-    if not s.startswith(("http://", "https://")):
-        return False
-    # Reject anything with a second scheme inside (e.g. ".../foohttps://...").
-    rest = s[8:] if s.startswith("https://") else s[7:]
-    return "https://" not in rest and "http://" not in rest
 
 
 # ---- Public entry point -------------------------------------------------
@@ -156,29 +112,18 @@ async def run_researcher(
     try:
         await step("fetching listing", "running")
         # Pull OpenGraph meta in parallel with the LLM extract. The meta
-        # scrape is free and works even when Gemini is rate-limited; it's the
-        # truth source for image_url because the model often returns null
-        # there even when the page has a perfectly good og:image.
-        listing, meta = await asyncio.gather(
-            _extract_listing(candidate["source_url"]),
+        # scrape is free and works even when Gemini is rate-limited.
+        (listing, spec_attrs), meta = await asyncio.gather(
+            _extract_listing(candidate["source_url"], spec),
             fetch_page_meta(candidate["source_url"]),
             return_exceptions=False,
         )
-        # Merge rules per field:
-        #   * image_url — OG wins outright. The LLM frequently emits
-        #     concatenated garbage like "<source_url><og:image>" so its value
-        #     is untrustworthy. og:image is what the retailer publishes.
-        #   * title / description — LLM wins when present (more on-spec),
-        #     OG fills gaps.
-        if meta.image_url:
-            listing.image_url = meta.image_url
-        elif listing.image_url and not _looks_like_url(listing.image_url):
-            listing.image_url = None
         if not listing.title and meta.title:
             listing.title = meta.title
-        if not listing.description_summary and meta.description:
-            listing.description_summary = meta.description[:300]
         listing_payload = listing.model_dump(exclude_none=False)
+        listing_payload["spec_attrs"] = spec_attrs
+        if meta.description:
+            listing_payload["description_summary"] = meta.description[:300]
         await step("extracted listing", "running", listing_payload)
 
         # ---- Optional browser-agent escalation ----
@@ -212,44 +157,6 @@ async def run_researcher(
                             setattr(listing, k, v)
                     await step("merged configured listing", "running", finding)
 
-            # ---- Log this run for the extractor pool ----
-            # We log REGARDLESS of whether Replicas is enabled — the data is
-            # cheap and unlocks the pool the moment we flip the flag.
-            try:
-                facts_now = listing.model_dump(exclude_none=True)
-                # "Successful sample" for Replicas trigger purposes is the
-                # widest definition that's still meaningful: any single
-                # substantive field. The cloud agent gets URL + action_history
-                # + extracted_facts; that triple is high-signal even when one
-                # of those fields is empty. Strict price-only or title-and-X
-                # gating drove demo failures where pages produced title only
-                # or description only (e.g. fragrance pages without a visible
-                # condition or seller field).
-                got_useful_data = bool(
-                    listing.price_cents
-                    or listing.title
-                    or listing.seller
-                    or listing.condition
-                    or listing.image_url
-                    or listing.description_summary
-                )
-                await client.insert(
-                    "extractor_runs",
-                    {
-                        "domain": _host(candidate["source_url"]),
-                        "candidate_id": candidate_id,
-                        "intent_id": intent_id,
-                        "source_url": candidate["source_url"],
-                        "spec": spec,
-                        "action_history": finding.get("configurator_history") or [],
-                        "extracted_facts": facts_now,
-                        "succeeded": got_useful_data,
-                    },
-                )
-            except Exception as e:
-                # Logging failure must NOT break the user-facing pipeline.
-                log.warning("extractor_runs insert failed: %s", e)
-
         if listing.price_cents:
             await client.update(
                 "candidates",
@@ -258,7 +165,8 @@ async def run_researcher(
             )
 
         await step("checking seller reputation", "running")
-        seller_rep = await _assess_seller(listing.seller, candidate.get("source"))
+        seller_name = (spec_attrs.get("seller") or finding.get("seller"))
+        seller_rep = await _assess_seller(seller_name, candidate.get("source"))
         await step("evaluating seller", "running", {"seller_rep": seller_rep})
 
         await step("scanning known issues", "running")
@@ -315,8 +223,8 @@ Your reply MUST be one raw JSON object — no prose, no Markdown, no code
 fences, no array wrapper. Be conservative: leave fields null if the page
 doesn't clearly state them. Do NOT invent prices, conditions, or sellers.
 price_cents and shipping_cost_cents must be integers in US cents. If the
-page shows a price range, use the lowest. For canonical_attrs, fill the
-variant fields you can identify — leave a field null when unknown rather
+page shows a price range, use the lowest. For spec_attrs, fill only the
+attribute fields you can identify — leave a field null when unknown rather
 than guessing."""
 
 
@@ -324,37 +232,64 @@ than guessing."""
 # when any tool is enabled in the same call. So for steps that need both a
 # tool (url_context / google_search) AND structured output, we ask the model
 # to emit JSON inside its text response and parse it ourselves.
-_EXTRACT_JSON_INSTRUCTION = """Reply with ONLY a JSON object — no prose,
+#
+# The instruction is now built dynamically per-request so the ``spec_attrs``
+# section reflects categories from the intake agent's spec.
+
+_EXTRACT_JSON_CORE = """Reply with ONLY a JSON object — no prose,
 no code fences — matching exactly this shape:
 
 {
   "title": string|null,
   "price_cents": integer|null,
-  "condition": string|null,
-  "seller": string|null,
-  "shipping_cost_cents": integer|null,
-  "shipping_speed": string|null,
-  "ships_from": string|null,
-  "return_policy": string|null,
-  "image_url": string|null,
-  "description_summary": string|null,
-  "canonical_attrs": {
-    "brand": string|null, "model": string|null, "generation": string|null,
-    "storage_gb": integer|null, "color": string|null,
-    "carrier_lock": string|null, "condition_grade": string|null,
-    "region": string|null
-  }
-}
+  "shipping_cost_cents": integer|null"""
 
-Use null for fields the page does not state. price_cents and
-shipping_cost_cents are integers in US cents.
+_EXTRACT_JSON_FOOTER = """Use null for fields the page does not state. price_cents and
+shipping_cost_cents are integers in US cents."""
 
-image_url: the primary product image — prefer the OpenGraph `og:image`
-meta tag if present, otherwise the largest visible product photo URL.
 
-description_summary: 1-2 neutral sentences (≤200 chars) describing what's
-actually being sold — variant, what's included, notable seller-supplied
-detail. Do NOT include marketing language."""
+def _build_extract_instruction(spec: dict[str, Any]) -> str:
+    """Build the JSON extraction instruction dynamically from the intake spec.
+
+    Only title, price_cents, and shipping_cost_cents are universal. Every other
+    attribute the researcher extracts is derived from the spec's categories.
+    """
+    categories = spec.get("categories") or {}
+
+    attr_schema_lines: list[str] = []
+    attr_guide_lines: list[str] = []
+    for cat_name, entry in categories.items():
+        if not isinstance(entry, dict):
+            continue
+        key = cat_name.lower().replace(" ", "_").replace("-", "_")
+        value_hint = entry.get("value", "")
+        attr_schema_lines.append(f'    "{key}": string|null')
+        attr_guide_lines.append(
+            f"  - {key}: extract the listing's {cat_name}"
+            + (f" (user wants: {value_hint})" if value_hint else "")
+        )
+
+    if attr_schema_lines:
+        spec_block = (
+            ',\n  "spec_attrs": {\n'
+            + ",\n".join(attr_schema_lines)
+            + "\n  }\n}"
+        )
+        guide = (
+            "\nspec_attrs field guide — extract each attribute as stated on "
+            "the listing page:\n" + "\n".join(attr_guide_lines)
+        )
+    else:
+        spec_block = ',\n  "spec_attrs": {}\n}'
+        guide = ""
+
+    return (
+        _EXTRACT_JSON_CORE
+        + spec_block
+        + "\n\n"
+        + _EXTRACT_JSON_FOOTER
+        + guide
+    )
 
 
 def _strip_code_fence(text: str) -> str:
@@ -370,13 +305,20 @@ def _strip_code_fence(text: str) -> str:
     return t.removesuffix("```").strip()
 
 
-async def _extract_listing(url: str) -> ListingFacts:
-    """One Gemini call: url_context tool, JSON-as-text output."""
+async def _extract_listing(
+    url: str, spec: dict[str, Any]
+) -> tuple[ListingFacts, dict[str, Any]]:
+    """One Gemini call: url_context tool, JSON-as-text output.
+
+    Returns ``(listing, spec_attrs)`` where ``spec_attrs`` contains the
+    dynamic attributes derived from the intake spec's categories.
+    """
     client = get_client()
+    instruction = _build_extract_instruction(spec)
     prompt = (
         "Read the product listing at this URL and extract the structured facts."
         f"\nURL: {url}\n\n"
-        + _EXTRACT_JSON_INSTRUCTION
+        + instruction
     )
     try:
         resp = await client.aio.models.generate_content(
@@ -390,18 +332,19 @@ async def _extract_listing(url: str) -> ListingFacts:
         )
     except Exception as e:
         log.warning("extract: url_context call failed for %s: %s", url, e)
-        return ListingFacts()
+        return ListingFacts(), {}
 
     text = _strip_code_fence(resp.text or "")
     data = _coerce_listing_json(text)
     if data is None:
         log.warning("extract: could not coerce JSON for %s; text=%r", url, text[:200])
-        return ListingFacts()
+        return ListingFacts(), {}
+    spec_attrs = data.pop("spec_attrs", {}) or {}
     try:
-        return ListingFacts(**data)
+        return ListingFacts(**data), spec_attrs
     except Exception as e:
         log.warning("extract: schema validation failed: %s; data keys=%s", e, list(data.keys()))
-        return ListingFacts()
+        return ListingFacts(), spec_attrs
 
 
 def _coerce_listing_json(text: str) -> dict[str, Any] | None:

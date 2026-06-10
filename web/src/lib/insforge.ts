@@ -12,21 +12,6 @@ export function isConfigured(): boolean {
   return Boolean(baseUrl) && Boolean(anonKey);
 }
 
-/**
- * Route an image URL through the orchestrator's pass-through proxy so it
- * loads with a Referer matching its own origin — bypassing the hotlink
- * protection that most retailer CDNs enforce against cross-origin <img>
- * fetches. The orchestrator URL defaults to localhost for the local dev
- * setup; override with NEXT_PUBLIC_ORCHESTRATOR_URL when deploying.
- */
-export function imgProxy(url: string | null | undefined): string | undefined {
-  if (!url) return undefined;
-  const base =
-    process.env.NEXT_PUBLIC_ORCHESTRATOR_URL?.replace(/\/$/, "") ??
-    "http://localhost:8787";
-  return `${base}/img?url=${encodeURIComponent(url)}`;
-}
-
 // --- Domain types: mirror migrations/<ts>_init.sql ---
 export type IntentStatus = "eliciting" | "ready" | "researching" | "done" | "error";
 export type CandidateStatus = "queued" | "researching" | "done" | "rejected" | "error";
@@ -48,7 +33,7 @@ export type CandidateRow = {
   id: string;
   intent_id: string;
   title: string;
-  canonical_attrs: Record<string, unknown>;
+  canonical_attrs: Record<string, unknown>; // legacy, now dynamic via spec_attrs
   source: string;
   source_url: string;
   raw_price_cents: number | null;
@@ -67,17 +52,16 @@ export type FindingRow = {
 };
 
 export type FindingPayload = {
+  // Universal core fields (always extracted)
   title?: string | null;
   price_cents?: number | null;
-  condition?: string | null;
-  seller?: string | null;
   shipping_cost_cents?: number | null;
-  shipping_speed?: string | null;
-  ships_from?: string | null;
-  return_policy?: string | null;
-  image_url?: string | null;
+  // Dynamic attributes extracted based on intake spec categories.
+  // Fields like condition, seller, return_policy, etc. live here now
+  // instead of at the top level.
+  spec_attrs?: Record<string, string | number | null>;
+  // Enrichment from OG meta / pipeline steps (not LLM-extracted)
   description_summary?: string | null;
-  canonical_attrs?: Record<string, unknown>;
   seller_rep?: string | null;
   known_issues?: string[];
   scam_score?: number;
